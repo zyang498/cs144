@@ -1,7 +1,6 @@
 #include "wrapping_integers.hh"
 
 #include <limits>
-#include <iostream>
 
 // Dummy implementation of a 32-bit wrapping integer
 
@@ -39,7 +38,7 @@ WrappingInt32 wrap(uint64_t n, WrappingInt32 isn) {
 uint64_t unwrap(WrappingInt32 n, WrappingInt32 isn, uint64_t checkpoint) {
     WrappingInt32 seq_checkpoint = wrap(checkpoint, isn);
     int32_t off_32 = seq_checkpoint - n;
-    //int64_t off_64 = static_cast<int64_t>(seq_checkpoint.raw_value()) - static_cast<int64_t>(n.raw_value());
+    // int64_t off_64 = static_cast<int64_t>(seq_checkpoint.raw_value()) - static_cast<int64_t>(n.raw_value());
     int64_t off_64 = static_cast<int64_t>(off_32);
     int64_t result = checkpoint - off_64;
     if (result < 0) {
