@@ -61,6 +61,8 @@ class TCPSender {
     uint64_t _absolute_ackno = 0;
     uint16_t _window_size = 1;
 
+    bool _fin_sent = false;
+
   public:
     //! Initialize a TCPSender
     TCPSender(const size_t capacity = TCPConfig::DEFAULT_CAPACITY,

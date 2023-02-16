@@ -5,6 +5,7 @@
 #include <random>
 #include <vector>
 #include <iostream>
+#include <algorithm>
 
 // Dummy implementation of a TCP sender
 
@@ -39,82 +40,76 @@ uint64_t TCPSender::bytes_in_flight() const {
 
 void TCPSender::fill_window() {
     cout << "in fill window" << endl;
+    // if sent fin and received corresponding ack, return
+    if (_fin_sent && _next_seqno == _absolute_ackno) {
+        return;
+    }
+    // if sent data but didn't receive corresponding ack, return
+    if (_next_seqno > _absolute_ackno && _next_seqno - _absolute_ackno == _window_size) {
+        cout << "return here" << endl;
+        return;
+    }
+    if (_next_seqno < _absolute_ackno) {
+        cout << "Should never enter here: received ack lower than next seq" << endl;
+        return;
+    }
+    if (_next_seqno - _absolute_ackno > _window_size) {
+        cout << "Should never enter here: sent data larger than window" << endl;
+        return;
+    }
     TCPSegment seg = TCPSegment();
     uint16_t window_size;
     if (_window_size == 0) {
+        cout << "1" << endl;
         window_size = 1;
     } else {
         window_size = _window_size;
     }
-    // whether the segment includes SYN
-    if (_absolute_ackno == 0) {
-        // whether the segment includes FIN
-        if (window_size >= _stream.buffer_size()) {
-            if (_stream.buffer_size() > TCPConfig::MAX_PAYLOAD_SIZE - 2) {
-                window_size = TCPConfig::MAX_PAYLOAD_SIZE - 2;
-            }
-        } else {
-            if (window_size > TCPConfig::MAX_PAYLOAD_SIZE - 1) {
-                window_size = TCPConfig::MAX_PAYLOAD_SIZE - 1;
-            }
-        }
-    } else {
-        if (window_size >= _stream.buffer_size()) {
-            if (_stream.buffer_size() > TCPConfig::MAX_PAYLOAD_SIZE - 1) {
-                window_size = TCPConfig::MAX_PAYLOAD_SIZE - 1;
-            }
-        } else {
-            if (window_size > TCPConfig::MAX_PAYLOAD_SIZE) {
-                window_size = TCPConfig::MAX_PAYLOAD_SIZE;
-            }
-        }
-    }
     // whether there are bytes outstanding but they should have been in the window
     if (_absolute_ackno > 0 && _absolute_ackno - 1 < _stream.bytes_read()) {
         size_t outstanding_bytes = _stream.bytes_read() - _absolute_ackno + 1;
-        if (window_size > outstanding_bytes) {
-            window_size -= outstanding_bytes;
+        if (_window_size > outstanding_bytes) {
+            window_size = min<size_t>(window_size, _window_size - outstanding_bytes);
         } else {
+            cout << "2 " << outstanding_bytes << endl;
             window_size = 1;
         }
     }
 
-    // write segment header
+    // write seq no
     if (_absolute_ackno == 0) {
-        seg.header().syn = true;
-    }
-    if (_stream.eof()) {
-        seg.header().fin = true;
-    }
-    if (seg.header().syn) {
         seg.header().seqno = _isn;
     } else {
         if (_absolute_ackno - 1 < _stream.bytes_read()) {
             size_t outstanding_bytes = _stream.bytes_read() - _absolute_ackno + 1;
             seg.header().seqno = _ackno + outstanding_bytes;
-        } else if (_absolute_ackno - 1 == _stream.bytes_read()) {
-            seg.header().seqno = _ackno;
+//        } else if (_absolute_ackno - 1 == _stream.bytes_read()) {
+//            seg.header().seqno = _ackno;
         } else {
-            cout << "Should never reach here" << endl;
+//            cout << "Should never reach here: received ack higher than read bytes" << endl;
             seg.header().seqno = _ackno;
         }
     }
 
-    // write payload
-    string data = _stream.read(window_size);
-    Buffer buffer = Buffer(std::move(data));
-    seg.payload() = buffer;
-    if (seg.length_in_sequence_space() > TCPConfig::MAX_PAYLOAD_SIZE) {
-        cout << "Segment length too long" << endl;
+    // write syn
+    if (_absolute_ackno == 0) {
+        seg.header().syn = true;
+        if (window_size > 0) {
+            window_size -= 1;
+        }
     }
 
-    cout << "segment" << endl;
-    cout << "syn: " << seg.header().syn << endl;
-    cout << "fin: " << seg.header().fin << endl;
-    cout << "payload: " << seg.payload().copy() << endl;
-    cout << "window_size: " << window_size << endl;
-    cout << "sequence length: " << seg.length_in_sequence_space() << endl;
-    cout << endl;
+    // write payload
+    string data = _stream.read(min<size_t>(window_size, TCPConfig::MAX_PAYLOAD_SIZE));
+    Buffer buffer = Buffer(std::move(data));
+    seg.payload() = buffer;
+
+    // write fin
+    cout << "-----eof: " << _stream.eof() << endl;
+    if (_stream.eof() && seg.length_in_sequence_space() < window_size) {
+        seg.header().fin = true;
+    }
+
     if (seg.length_in_sequence_space() > 0) {
         uint64_t absolute_seqno = unwrap(seg.header().seqno, _isn, _absolute_ackno - 1);
         uint64_t absolute_ackno = absolute_seqno + seg.length_in_sequence_space();
@@ -124,8 +119,19 @@ void TCPSender::fill_window() {
         _next_seqno += seg.length_in_sequence_space();
         _segments_out.push(seg);
         _outstanding_segments[absolute_ackno] = seg;
+        cout << "key: " << absolute_ackno << endl;
         if (!_timer.is_alive()) {_timer.start(_rto);}
+        if (seg.header().fin) {_fin_sent = true;}
     }
+    cout << "segment" << endl;
+    cout << "syn: " << seg.header().syn << endl;
+    cout << "fin: " << seg.header().fin << endl;
+    cout << "seq: " << seg.header().seqno << endl;
+    cout << "payload: " << seg.payload().copy() << endl;
+    cout << "window_size: " << window_size << endl;
+    cout << "sequence length: " << seg.length_in_sequence_space() << endl;
+    cout << "next seq: " << _next_seqno << endl;
+    cout << endl;
 }
 
 //! \param ackno The remote receiver's ackno (acknowledgment number)
@@ -138,18 +144,25 @@ void TCPSender::ack_received(const WrappingInt32 ackno, const uint16_t window_si
     cout << _next_seqno << endl;
     cout << window_size << endl;
     cout << endl;
+    if (absolute_ackno > _next_seqno) {
+        return;
+    }
     if (absolute_ackno > _absolute_ackno) {
         _rto = _initial_retransmission_timeout;
         _timer.stop();
         _timer.start(_rto);
         _consecutive_retransmissions = 0;
+        _ackno = ackno;
+        _absolute_ackno = absolute_ackno;
+        _window_size = window_size;
+    } else if (absolute_ackno == _absolute_ackno) {
+        _window_size = window_size;
+    } else {
+        return;
     }
-    _ackno = ackno;
-    _absolute_ackno = absolute_ackno;
-    _window_size = window_size;
     vector<uint64_t> st;
     for (auto item : _outstanding_segments) {
-        if (absolute_ackno >= item.first) {
+        if (_absolute_ackno >= item.first) {
             st.push_back(item.first);
         }
     }
@@ -159,10 +172,8 @@ void TCPSender::ack_received(const WrappingInt32 ackno, const uint16_t window_si
     if (_outstanding_segments.empty()) {
         _timer.stop();
     }
-    if (absolute_ackno == _next_seqno) {
-        cout << "call fill window" << endl;
-        TCPSender::fill_window();
-    }
+    cout << "call fill window" << endl;
+    TCPSender::fill_window();
 }
 
 //! \param[in] ms_since_last_tick the number of milliseconds since the last call to this method
