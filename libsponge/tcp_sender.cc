@@ -59,6 +59,22 @@ void TCPSender::fill_window() {
     }
     TCPSegment seg = TCPSegment();
     uint16_t window_size;
+    uint16_t data_size;
+    int flag = 0;
+
+    // write seq no
+    if (_absolute_ackno == 0) {
+        seg.header().seqno = _isn;
+    } else {
+        if (_absolute_ackno - 1 < _stream.bytes_read()) {
+            size_t outstanding_bytes = _stream.bytes_read() - _absolute_ackno + 1;
+            seg.header().seqno = _ackno + outstanding_bytes;
+        } else {
+            seg.header().seqno = _ackno;
+        }
+    }
+
+    // determine window size
     if (_window_size == 0) {
         cout << "1" << endl;
         window_size = 1;
@@ -75,32 +91,18 @@ void TCPSender::fill_window() {
             window_size = 1;
         }
     }
-
-    // write seq no
-    if (_absolute_ackno == 0) {
-        seg.header().seqno = _isn;
-    } else {
-        if (_absolute_ackno - 1 < _stream.bytes_read()) {
-            size_t outstanding_bytes = _stream.bytes_read() - _absolute_ackno + 1;
-            seg.header().seqno = _ackno + outstanding_bytes;
-//        } else if (_absolute_ackno - 1 == _stream.bytes_read()) {
-//            seg.header().seqno = _ackno;
-        } else {
-//            cout << "Should never reach here: received ack higher than read bytes" << endl;
-            seg.header().seqno = _ackno;
-        }
-    }
+    data_size = window_size;
 
     // write syn
     if (_absolute_ackno == 0) {
         seg.header().syn = true;
-        if (window_size > 0) {
-            window_size -= 1;
+        if (data_size > 0) {
+            data_size -= 1;
         }
     }
 
     // write payload
-    string data = _stream.read(min<size_t>(window_size, TCPConfig::MAX_PAYLOAD_SIZE));
+    string data = _stream.read(min<size_t>(data_size, TCPConfig::MAX_PAYLOAD_SIZE));
     Buffer buffer = Buffer(std::move(data));
     seg.payload() = buffer;
 
@@ -108,6 +110,10 @@ void TCPSender::fill_window() {
     cout << "-----eof: " << _stream.eof() << endl;
     if (_stream.eof() && seg.length_in_sequence_space() < window_size) {
         seg.header().fin = true;
+    }
+
+    if (!_stream.buffer_empty() && seg.length_in_sequence_space() < window_size) {
+        flag = 1;
     }
 
     if (seg.length_in_sequence_space() > 0) {
@@ -123,12 +129,17 @@ void TCPSender::fill_window() {
         if (!_timer.is_alive()) {_timer.start(_rto);}
         if (seg.header().fin) {_fin_sent = true;}
     }
+
+    if (flag == 1) {
+        TCPSender::fill_window();
+    }
     cout << "segment" << endl;
     cout << "syn: " << seg.header().syn << endl;
     cout << "fin: " << seg.header().fin << endl;
     cout << "seq: " << seg.header().seqno << endl;
     cout << "payload: " << seg.payload().copy() << endl;
     cout << "window_size: " << window_size << endl;
+    cout << "data_size: " << data_size << endl;
     cout << "sequence length: " << seg.length_in_sequence_space() << endl;
     cout << "next seq: " << _next_seqno << endl;
     cout << endl;
