@@ -7,7 +7,27 @@
 #include "wrapping_integers.hh"
 
 #include <functional>
+#include <map>
 #include <queue>
+
+class Timer {
+  private:
+    unsigned int _rto = 0;
+    bool _alive = false;
+    unsigned int _current_time = 0;
+
+  public:
+    Timer(){};
+    void start(unsigned int rto) {
+        _rto = rto;
+        _alive = true;
+        _current_time = 0;
+    }
+    void increment_time(size_t ms) { _current_time += ms; }
+    bool is_expired() { return _current_time >= _rto; }
+    bool is_alive() { return _alive; }
+    void stop() { _alive = false; }
+};
 
 //! \brief The "sender" part of a TCP implementation.
 
@@ -31,6 +51,15 @@ class TCPSender {
 
     //! the (absolute) sequence number for the next byte to be sent
     uint64_t _next_seqno{0};
+
+    unsigned int _rto;
+    unsigned int _consecutive_retransmissions = 0;
+    std::map<uint64_t, TCPSegment> _outstanding_segments;
+    Timer _timer = Timer();
+
+    WrappingInt32 _ackno = WrappingInt32(0);
+    uint64_t _absolute_ackno = 0;
+    uint16_t _window_size = 1;
 
   public:
     //! Initialize a TCPSender
