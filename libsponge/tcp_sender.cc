@@ -2,10 +2,10 @@
 
 #include "tcp_config.hh"
 
+#include <algorithm>
+#include <iostream>
 #include <random>
 #include <vector>
-#include <iostream>
-#include <algorithm>
 
 // Dummy implementation of a TCP sender
 
@@ -25,28 +25,23 @@ TCPSender::TCPSender(const size_t capacity, const uint16_t retx_timeout, const s
     , _initial_retransmission_timeout{retx_timeout}
     , _stream(capacity)
     , _rto(retx_timeout)
-    , _outstanding_segments(){}
+    , _outstanding_segments() {}
 
 uint64_t TCPSender::bytes_in_flight() const {
     uint64_t count = 0;
     for (auto item : _outstanding_segments) {
-//        cout << "bytes in flight" << endl;
-//        cout << item.second.header().syn << endl;
-//        cout << item.second.length_in_sequence_space() << endl;
         count += item.second.length_in_sequence_space();
     }
     return count;
 }
 
 void TCPSender::fill_window() {
-    cout << "in fill window" << endl;
     // if sent fin and received corresponding ack, return
     if (_fin_sent && _next_seqno == _absolute_ackno) {
         return;
     }
     // if sent data but didn't receive corresponding ack, return
     if (_next_seqno > _absolute_ackno && _next_seqno - _absolute_ackno == _window_size) {
-        cout << "return here" << endl;
         return;
     }
     if (_next_seqno < _absolute_ackno) {
@@ -76,24 +71,23 @@ void TCPSender::fill_window() {
 
     // determine window size
     if (_window_size == 0) {
-        cout << "1" << endl;
         window_size = 1;
     } else {
         window_size = _window_size;
     }
-    // whether there are bytes outstanding but they should have been in the window
+    // whether there are bytes outstanding and they should have been in the window
     if (_absolute_ackno > 0 && _absolute_ackno - 1 < _stream.bytes_read()) {
         size_t outstanding_bytes = _stream.bytes_read() - _absolute_ackno + 1;
         if (_window_size > outstanding_bytes) {
             window_size = min<size_t>(window_size, _window_size - outstanding_bytes);
         } else {
-            cout << "2 " << outstanding_bytes << endl;
             window_size = 1;
         }
     }
+    // data size is the payload size
     data_size = window_size;
 
-    // write syn
+    // write syn and check whether need to reduce data size
     if (_absolute_ackno == 0) {
         seg.header().syn = true;
         if (data_size > 0) {
@@ -106,12 +100,12 @@ void TCPSender::fill_window() {
     Buffer buffer = Buffer(std::move(data));
     seg.payload() = buffer;
 
-    // write fin
-    cout << "-----eof: " << _stream.eof() << endl;
+    // write fin when stream reaches eof and there are additional spaces in window size
     if (_stream.eof() && seg.length_in_sequence_space() < window_size) {
         seg.header().fin = true;
     }
 
+    // if window size still has space and the stream still has data, call fill_window() again
     if (!_stream.buffer_empty() && seg.length_in_sequence_space() < window_size) {
         flag = 1;
     }
@@ -119,42 +113,30 @@ void TCPSender::fill_window() {
     if (seg.length_in_sequence_space() > 0) {
         uint64_t absolute_seqno = unwrap(seg.header().seqno, _isn, _absolute_ackno - 1);
         uint64_t absolute_ackno = absolute_seqno + seg.length_in_sequence_space();
+        // if payload is empty and the absolute ackno of the segment is already in the outstanding segment, return
         if (seg.payload().copy().empty() && _outstanding_segments.find(absolute_ackno) != _outstanding_segments.end()) {
             return;
         }
         _next_seqno += seg.length_in_sequence_space();
         _segments_out.push(seg);
         _outstanding_segments[absolute_ackno] = seg;
-        cout << "key: " << absolute_ackno << endl;
-        if (!_timer.is_alive()) {_timer.start(_rto);}
-        if (seg.header().fin) {_fin_sent = true;}
+        if (!_timer.is_alive()) {
+            _timer.start(_rto);
+        }
+        if (seg.header().fin) {
+            _fin_sent = true;
+        }
     }
 
     if (flag == 1) {
         TCPSender::fill_window();
     }
-    cout << "segment" << endl;
-    cout << "syn: " << seg.header().syn << endl;
-    cout << "fin: " << seg.header().fin << endl;
-    cout << "seq: " << seg.header().seqno << endl;
-    cout << "payload: " << seg.payload().copy() << endl;
-    cout << "window_size: " << window_size << endl;
-    cout << "data_size: " << data_size << endl;
-    cout << "sequence length: " << seg.length_in_sequence_space() << endl;
-    cout << "next seq: " << _next_seqno << endl;
-    cout << endl;
 }
 
 //! \param ackno The remote receiver's ackno (acknowledgment number)
 //! \param window_size The remote receiver's advertised window size
 void TCPSender::ack_received(const WrappingInt32 ackno, const uint16_t window_size) {
     uint64_t absolute_ackno = unwrap(ackno, _isn, _absolute_ackno - 1);
-    cout << "ack receive" << endl;
-    cout << ackno << endl;
-    cout << absolute_ackno << endl;
-    cout << _next_seqno << endl;
-    cout << window_size << endl;
-    cout << endl;
     if (absolute_ackno > _next_seqno) {
         return;
     }
@@ -183,7 +165,6 @@ void TCPSender::ack_received(const WrappingInt32 ackno, const uint16_t window_si
     if (_outstanding_segments.empty()) {
         _timer.stop();
     }
-    cout << "call fill window" << endl;
     TCPSender::fill_window();
 }
 
